@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Offline renderer / test bench for the Yunseul MR core.
-//   render in.wav out.wav [--amount 0.5] [--delta] [--block 480] [--stats]
+//   render in.wav out.wav [--amount 0.5] [--tone 0] [--delta] [--block 480] [--stats]
 #include "../src/ys_mr_core.h"
 
 #include <chrono>
@@ -130,13 +130,15 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: render in.wav out.wav [--amount a] [--delta] [--block n] [--stats]\n");
 		return 2;
 	}
-	float amount = 0.5f;
+	float amount = 0.5f, tone = 0.f;
 	bool delta = false, stats = false;
 	int block = 480;
 	for (int i = 3; i < argc; ++i) {
 		std::string a = argv[i];
 		if (a == "--amount" && i + 1 < argc)
 			amount = (float)atof(argv[++i]);
+		else if (a == "--tone" && i + 1 < argc)
+			tone = (float)atof(argv[++i]);
 		else if (a == "--delta")
 			delta = true;
 		else if (a == "--stats")
@@ -152,6 +154,7 @@ int main(int argc, char **argv)
 	static ysmr::Core core;
 	core.prepare(w.sr, w.ch);
 	core.setAmount(amount);
+	core.setTone(tone);
 	core.setDelta(delta);
 
 	const int nb = core.bands();
@@ -180,8 +183,8 @@ int main(int argc, char **argv)
 	fprintf(stderr, "bands %d  audio %.2fs  cpu %.3fs  load %.2f%% of one core\n", nb, dur, sec, 100.0 * sec / dur);
 	if (stats) {
 		for (int k = 0; k < nb; ++k)
-			printf("%.1f %.3f %.3f\n", core.bandFreq(k), sumRed[(size_t)k] / (double)std::max(1L, ticks),
-			       maxRed[(size_t)k]);
+			printf("%.1f %.3f %.3f %.3f\n", core.bandFreq(k),
+			       sumRed[(size_t)k] / (double)std::max(1L, ticks), maxRed[(size_t)k], core.bandToneDb(k));
 	}
 	if (!writeWavF32(argv[2], w)) {
 		fprintf(stderr, "cannot write %s\n", argv[2]);

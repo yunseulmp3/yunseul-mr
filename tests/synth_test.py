@@ -139,6 +139,72 @@ check("no NaN / runaway on torture input", np.all(np.isfinite(yt)) and np.max(np
 yd, _, _ = run(p_res, "res_delta.wav", "--amount", "0.5", "--delta")
 check("delta + output = input", np.max(np.abs(yd[:, 0] + y_res[:, 0] - res.astype(np.float32))) < 1e-5, "max err %.2g" % np.max(np.abs(yd[:, 0] + y_res[:, 0] - res.astype(np.float32))))
 
+# ---- tone balance -------------------------------------------------------------
+def target_noise(n):
+    # noise shaped like the built-in target: -4.5 dB/oct overall, extra roll-off above 10 kHz
+    w = rng.standard_normal(n)
+    X = np.fft.rfft(w)
+    f = np.fft.rfftfreq(n, 1 / SR)
+    f[0] = f[1]
+    db = -10 * np.log10(f) - 1.5 * np.log2(f / 700.0)
+    db = db - np.where(f > 10000, 3.0 * np.log2(f / 10000.0), 0.0)
+    db[f < 40] = -200
+    x = np.fft.irfft(X * 10 ** (db / 20), n)
+    return x / np.max(np.abs(x)) * 0.5
+
+
+def shelf_lo(x, f0, gain_db):
+    A = 10 ** (gain_db / 40)
+    w0 = 2 * np.pi * f0 / SR
+    al = np.sin(w0) / 2 * np.sqrt(2)
+    c = np.cos(w0)
+    b = [A * ((A + 1) - (A - 1) * c + 2 * np.sqrt(A) * al), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - 2 * np.sqrt(A) * al)]
+    a = [(A + 1) + (A - 1) * c + 2 * np.sqrt(A) * al, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - 2 * np.sqrt(A) * al]
+    return signal.lfilter(b, a, x)
+
+
+NT = SR * 30
+tn = target_noise(NT)
+late = slice(SR * 15, NT)
+
+y, _, _ = run(wr("tn.wav", st(tn)), "tn_o.wav", "--amount", "0", "--tone", "1")
+f, a = spec_db(tn[late])
+_, b = spec_db(y[late, 0])
+d = b - a
+worst = max(abs(at(f, d, x, 0.15)) for x in (100, 200, 400, 800, 1600, 3200, 6400, 10000))
+check("tone: on-target material left alone", worst < 1.0, "largest change %.2f dB" % worst)
+
+boomy = shelf_lo(tn, 200, 8)
+boomy = boomy / np.max(np.abs(boomy)) * 0.5
+y, _, _ = run(wr("boomy.wav", st(boomy)), "boomy_o.wav", "--amount", "0", "--tone", "1")
+f, a = spec_db(boomy[late])
+_, b = spec_db(y[late, 0])
+d = b - a
+lo, mid = at(f, d, 100, 0.15), np.mean([at(f, d, x, 0.15) for x in (800, 1600, 3200)])
+check("tone: +8 dB of extra low end is pulled back", lo < -3.0 and lo >= -5.5, "%.1f dB at 100 Hz" % lo)
+check("tone: mids stay put while lows are cut", abs(mid) < 1.5, "%.2f dB avg at 0.8/1.6/3.2 kHz" % mid)
+c = signal.correlate(y[SR * 20 : SR * 24, 0], boomy[SR * 20 : SR * 24], "full", method="fft")
+lag = int(np.argmax(c)) - (SR * 4 - 1)
+check("tone: no added delay", abs(lag) <= 1, "cross-correlation peak at %d samples" % lag)
+
+dull = signal.lfilter(*signal.butter(2, 3500, fs=SR), tn)
+dull = dull / np.max(np.abs(dull)) * 0.5
+y, _, _ = run(wr("dull.wav", st(dull)), "dull_o.wav", "--amount", "0", "--tone", "1")
+f, a = spec_db(dull[late])
+_, b = spec_db(y[late, 0])
+d = b - a
+hi, top = at(f, d, 6000, 0.15), np.max(d[(f > 60) & (f < 16000)])
+check("tone: dull top end is lifted, never more than +5 dB", hi > 2.0 and top < 5.8, "%.1f dB at 6 kHz, max %.1f dB" % (hi, top))
+
+sparse = signal.lfilter(*signal.butter(4, [300, 600], btype="band", fs=SR), rng.standard_normal(NT))
+sparse = sparse / np.max(np.abs(sparse)) * 0.3
+y, _, _ = run(wr("sparse.wav", st(sparse)), "sparse_o.wav", "--amount", "0", "--tone", "1")
+dmax = np.max(np.abs(y[late, 0] - sparse[late].astype(np.float32)))
+check("tone: sparse material (one instrument) is not re-equalised", dmax < 1e-3, "max difference %.2g" % dmax)
+
+yt2, _, _ = run(os.path.join(WORK, "tort.wav"), "tort_t.wav", "--amount", "1.0", "--tone", "1")
+check("tone: no NaN / runaway on torture input", np.all(np.isfinite(yt2)) and np.max(np.abs(yt2)) < 2.5, "peak %.2f" % np.max(np.abs(yt2)))
+
 print("CPU:", err.strip())
 print("CPU (torture, denormal tail):", err_t.strip())
 print("ALL PASS" if ok else "SOME FAILED")
